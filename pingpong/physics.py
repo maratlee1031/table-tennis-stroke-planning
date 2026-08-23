@@ -368,15 +368,23 @@ def contact_report(vel, spin, normal, paddle_vel,
     }
 
 
-def hit_with_paddle(vel, spin, paddle: Paddle, ball_pos):
+def hit_with_paddle(vel, spin, paddle: Paddle, ball_pos, normal=None):
     """Strike the ball with a paddle, returning (vel_out, spin_out).
 
     Both the incoming velocity and the incoming spin feed into the result.
     That is precisely what the old version was missing: it set the outgoing
     velocity to ``n * power`` and discarded the incoming ball entirely,
     which is not physics at all.
+
+    ``normal`` overrides which face is struck. **Pass it whenever the ball
+    has been rewound onto the blade**, which is what a swept contact test
+    produces: at the contact point the ball lies in the blade plane, so
+    ``face_normal_toward`` is being asked which side of a plane a point on
+    that plane is on. The answer is whatever the rounding says. Choosing the
+    face from the ball's position *before* the step is unambiguous, and
+    getting it wrong drives the ball back out through the stroke.
     """
-    n = paddle.face_normal_toward(ball_pos)
+    n = paddle.face_normal_toward(ball_pos) if normal is None else _safe_unit(normal)
     return collide(
         np.asarray(vel, dtype=float),
         np.asarray(spin, dtype=float),

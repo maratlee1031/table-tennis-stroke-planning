@@ -827,8 +827,10 @@ class Game(ShowBase):
         in_spin = self.ball.spin.copy()
         in_pos = self.ball.pos.copy()
 
+        # n was chosen from ball_prev, before the ball was rewound onto the
+        # blade -- the only point at which the face is unambiguous
         out_vel, out_spin = physics.hit_with_paddle(
-            in_vel, in_spin, self.paddle, self.ball.pos
+            in_vel, in_spin, self.paddle, self.ball.pos, normal=n
         )
         self.ball.vel = out_vel
         self.ball.spin = out_spin

@@ -116,6 +116,9 @@ pingpong/            physics core, no Panda3D, runs headless in batch
 main_wss.py          the game (rendering + input)
 coach_game.py        AI coach (CEM inverse solve for the stroke)
 ai_play.py           watch models play a shot you choose, several at once
+rally_ai.py          play a rally against a trained policy
+sweep_weights.py     what GOAL_WEIGHTS trades away, on the true physics
+verify_learning.py   checks for the encoding, agents and comparison layer
 train_ai.py          the whole ML pipeline: data, train, eval, report
 ml_report.py         figures and summary table from results.csv
 compare_models.py    figures comparing planners on a shot you choose
@@ -175,6 +178,9 @@ of averaging past strokes.
 | The stroke card read as though the model had done the opposite of what it did | The comparison table printed three column headers over two columns of numbers, so the *requested* value sat under "achieved". It now prints the achieved column it always promised |
 | kNN was unusable at 200k demonstrations | The distance matrix was built as a `(chunk, N, dim)` broadcast -- 5.3 GB per chunk. Expanded to `\|a-b\|^2 = \|a\|^2 + \|b\|^2 - 2ab` it is one BLAS call, 0.4 GB and 6.6x faster, with bit-identical neighbours |
 | In `ai_play`, auto-serve replayed the previous rally's stroke | `planned_action` was cleared when returning to the setup screen but not on the serve itself, and auto-serve skips the setup screen |
+| The opponent hit every ball backwards, off its own end | `hit_with_paddle` asked `face_normal_toward` which face was struck, using the ball position **after** it had been rewound onto the blade by the swept contact test -- that is asking which side of a plane a point *on* that plane is on, and the answer is whatever the rounding says. The player's half happened to round the right way; the opponent's rounded the wrong way every time. Both callers now pass the normal they already chose from the ball's position before the step, where the face is unambiguous |
+| Rallies longer than two strokes were impossible | `player_hit` is a rally-level flag -- "has the player touched it at all" -- so it only has a rising edge on the *first* stroke. Using it to detect each new stroke left `last_hitter` stuck after the second. `last_hit_time` moves on every contact |
+| Good rallies were cut off mid-flight | `RALLY_TIMEOUT` is measured from the serve, which is right when a rally is one stroke long. `rally_ai` restarts that clock on every contact, so only rallies that have actually stopped are ended |
 | Random requests in `ai_play` were mostly impossible | The five goal dimensions were sampled independently, which lands off the reachable set almost every time -- the exact trap `dataset.achievable_goals` exists to avoid. `[G]` now draws from a pool built that way instead (in a background thread; it costs a few seconds of simulation) |
 
 `analyze_states.py` and `plot_landing_trajectories.py` were merged into
@@ -453,6 +459,35 @@ A scatter is judged on every pair of series colours at once, and only the
 first three slots of the categorical palette clear that floor; one series per
 panel has no pair to confuse. The per-dimension figure is split five ways for
 the same kind of reason -- metres, m/s and rad/s cannot share an axis.
+
+### Playing against it
+
+```
+python rally_ai.py                              # the best policy, full range
+python rally_ai.py --model mdn_20000_i8p256     # an easier opponent
+python rally_ai.py --difficulty 0.4             # gentler, more central returns
+```
+
+Controls are `main_wss.py`'s: the phone is the paddle, arrow keys and space
+work without one. This is the half the project had been missing --
+`main_wss.py` has a human returning serves from nothing, `ai_play.py` has a
+model returning serves with no human in the room, and `coach_game.py` has the
+solver commenting on your stroke. None of them put both players on the table.
+
+**The opponent solves a mirrored problem.** Every policy was trained on one
+situation: a ball arriving at the strike plane travelling in -x, to be
+returned into +x. The opponent faces the reverse. Rather than ask the model
+to extrapolate to a case it has never seen, the incoming ball is rotated 180
+degrees about the vertical axis into the frame it knows, and the blade normal
+and paddle velocity it returns are rotated back out. That is a rigid motion,
+so the contact model is exactly invariant under it -- `verify_learning.py`
+pins that to zero error rather than trusting it.
+
+The same trick covers the arrival prediction: `physics.predict_plane_crossing`
+only looks for a crossing in -x and returns None if the ball starts on the
+far side, because it was written for a ball arriving at our end. Mirroring
+first makes the opponent's problem the one it was built for, so there is one
+implementation rather than two to keep in step.
 
 ### Using a stroke on hardware
 
