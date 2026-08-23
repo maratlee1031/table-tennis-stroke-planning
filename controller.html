@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Ping-Pong Phone Controller</title>
+  <style>
+    :root{ color-scheme: light dark; }
+    body{
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      padding:12px; margin:0; -webkit-user-select:none; user-select:none;
+      touch-action:manipulation;
+    }
+    h3{margin:4px 0 10px}
+    input,button{font-size:16px}
+    button{
+      padding:10px 14px; border-radius:10px; border:1px solid #999;
+      background:#f4f4f4; color:#111;
+    }
+    button:active{background:#ddd}
+    button.primary{background:#1769e0; color:#fff; border-color:#1156bb}
+    .row{margin:8px 0; display:flex; gap:8px; flex-wrap:wrap}
+    .row.block{display:block}
+    .card{border:1px solid #ccc; border-radius:12px; padding:12px; margin:10px 0}
+    pre{white-space:pre-wrap; font-size:12px; margin:0}
+    .kv{display:grid; grid-template-columns:auto 1fr; gap:6px 10px; font-size:14px}
+    .kv div:nth-child(2n-1){color:#777}
+    .big{font-size:15px; font-weight:600}
+    .ok{color:#1a8f3c} .bad{color:#c22}
+    /* swing strength bar */
+    .meter{height:22px; background:#e5e5e5; border-radius:11px; overflow:hidden}
+    .meter > i{
+      display:block; height:100%; width:0%;
+      background:linear-gradient(90deg,#3fa64b,#e8c33a,#d9483b);
+      transition:width .05s linear;
+    }
+  </style>
+</head>
+<body>
+  <h3>Phone Controller</h3>
+
+  <div class="card">
+    <div class="row block">
+      1) Same Wi-Fi. 2) Tap <b>Use this page host</b> then <b>Start</b>.
+      3) Allow the motion sensors.<br/>
+      4) <b>Hold the phone like a paddle (screen towards you, back towards
+      the ball) and then tap Calibrate.</b>
+    </div>
+    <div class="row block">
+      Host (ws/wss):<br/>
+      <input id="host" style="width:100%; box-sizing:border-box" value="wss://127.0.0.1:8766">
+    </div>
+    <div class="row">
+      <button id="btnHost">Use this page host</button>
+      <button id="btnStart" class="primary">Start</button>
+    </div>
+    <div class="row">
+      <button id="btnCalib" class="primary">Calibrate</button>
+      <button id="btnCenter">Center</button>
+    </div>
+    <div class="row block" id="status">Status: idle</div>
+    <div class="row block" id="assign">Assigned: - | TX: 0 Hz</div>
+  </div>
+
+  <div class="card">
+    <div class="big" style="margin-bottom:6px">Swing <span id="swingTxt">0.0 m/s</span></div>
+    <div class="meter"><i id="swingBar"></i></div>
+  </div>
+
+  <div class="card">
+    <div class="kv">
+      <div>quat x/y/z/w</div><div id="quat">-</div>
+      <div>gyro x/y/z (rad/s)</div><div id="gyro">-</div>
+      <div>lin acc x/y/z (m/s2)</div><div id="linacc">-</div>
+      <div>sensor source</div><div id="src">-</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <pre id="log" style="max-height:200px; overflow:auto"></pre>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const hostInput = $('host'), btnHost = $('btnHost'), btnStart = $('btnStart');
+  const btnCalib = $('btnCalib'), btnCenter = $('btnCenter');
+  const statusEl = $('status'), assignEl = $('assign'), logEl = $('log');
+  const quatEl = $('quat'), gyroEl = $('gyro'), linEl = $('linacc'), srcEl = $('src');
+  const swingBar = $('swingBar'), swingTxt = $('swingTxt');
+
+  const DEG2RAD = Math.PI / 180;
+
+  // Rough swing speed for the on-screen meter: v ~ |w| * arm length.
+  // The real estimate lives in Python (pingpong/swing.py), which also
+  // recovers the direction.
+  const ARM_LENGTH = 0.45;
+  const SWING_FULL_SCALE = 12.0;   // m/s at a full bar
+
+  let ws = null, assignedId = "-";
+  let txCount = 0, txLastTime = performance.now();
+
+  function log(msg){
+    const t = new Date().toLocaleTimeString();
+    logEl.textContent += `[${t}] ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setStatus(msg, good){
+    statusEl.innerHTML = 'Status: <span class="' + (good ? 'ok' : '') + '">' + msg + '</span>';
+  }
+
+  btnHost.onclick = () => {
+    const origin = location.origin.replace(/^http/, "ws");
+    hostInput.value = origin.replace(/:\d+$/, "") + ":8766";
+    log("Set host = " + hostInput.value);
+  };
+
+  // ================================================================
+  //  Sensor state. Every listener only updates this object; a single
+  //  fixed-rate loop sends it, so the samples line up in time.
+  // ================================================================
+  const state = {
+    q: [0, 0, 0, 1],          // orientation quaternion (x,y,z,w)
+    gyro: [0, 0, 0],          // body angular velocity, rad/s
+    acc: [0, 0, 0],           // body acceleration, m/s^2
+    accIncludesG: false,
+    haveQ: false,
+    haveGyro: false,
+    source: "-"
+  };
+
+  // ----------------------------------------------------------------
+  //  W3C DeviceOrientation -> quaternion
+  //
+  //  The spec defines Z-X'-Y'' (intrinsic), that is
+  //      R = Rz(alpha) * Rx(beta) * Ry(gamma)
+  //  so alpha is about Z, beta about X and gamma about Y.
+  //
+  //  The old code used ZYX and treated beta as Y and gamma as X, swapping
+  //  the axes; at (alpha,beta,gamma)=(30,45,60) that is a 49 degree error.
+  //  It is also why only rotation about the vertical axis looked correct:
+  //  with beta=gamma=0 the two conventions happen to agree.
+  //
+  //  Note: holding the phone upright as a paddle puts beta near +/-90,
+  //  which is the gimbal-lock singularity of this Euler set, so the
+  //  sensor's native quaternion is preferred below when available.
+  // ----------------------------------------------------------------
+  function eulerToQuat(alpha, beta, gamma){
+    const _x = (beta  || 0) * DEG2RAD;   // beta  -> X
+    const _y = (gamma || 0) * DEG2RAD;   // gamma -> Y
+    const _z = (alpha || 0) * DEG2RAD;   // alpha -> Z
+
+    const cX = Math.cos(_x/2), sX = Math.sin(_x/2);
+    const cY = Math.cos(_y/2), sY = Math.sin(_y/2);
+    const cZ = Math.cos(_z/2), sZ = Math.sin(_z/2);
+
+    return [
+      sX*cY*cZ - cX*sY*sZ,   // x
+      cX*sY*cZ + sX*cY*sZ,   // y
+      cX*cY*sZ + sX*sY*cZ,   // z
+      cX*cY*cZ - sX*sY*sZ    // w
+    ];
+  }
+
+  // ================================================================
+  //  WebSocket
+  // ================================================================
+  function connectWS(){
+    const url = hostInput.value.trim();
+    if(!url){ alert("Enter a ws/wss URL first"); return; }
+    try{
+      ws = new WebSocket(url);
+    }catch(e){
+      log("WS error (ctor): " + e);
+      return;
+    }
+    setStatus("connecting...");
+    ws.onopen = () => { setStatus("connected", true); log("WS connected"); };
+    ws.onclose = () => {
+      setStatus("closed");
+      log("WS closed");
+      assignedId = "-";
+      assignEl.textContent = "Assigned: - | TX: 0 Hz";
+    };
+    ws.onerror = () => {
+      log("WS error - if it never connects, open https://<PC-IP>:8766 in the " +
+          "browser and accept the certificate warning there too. Certificate " +
+          "exceptions are per host+port, so accepting 8443 does not cover 8766.");
+    };
+    ws.onmessage = (ev) => {
+      log("<- " + ev.data);
+      try{
+        const obj = JSON.parse(ev.data);
+        if(obj.assigned){
+          assignedId = obj.assigned;
+          assignEl.textContent = `Assigned: ${assignedId} | TX: 0 Hz`;
+        }
+      }catch(e){}
+    };
+  }
+
+  function send(obj){
+    if(!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify(obj));
+    txCount++;
+    const now = performance.now();
+    if(now - txLastTime > 1000){
+      const hz = (txCount * 1000 / (now - txLastTime)).toFixed(0);
+      assignEl.textContent = `Assigned: ${assignedId} | TX: ${hz} Hz`;
+      txLastTime = now;
+      txCount = 0;
+    }
+  }
+
+  // ================================================================
+  //  Sensors
+  // ================================================================
+  let oriSensor = null, gyroSensor = null, linSensor = null;
+  let legacyStarted = false;
+
+  function startGenericSensors(){
+    let got = [];
+
+    if('AbsoluteOrientationSensor' in window){
+      try{
+        oriSensor = new AbsoluteOrientationSensor({frequency:60, referenceFrame:"device"});
+        oriSensor.addEventListener('reading', () => {
+          // Native quaternion: no Euler conversion error, no gimbal lock
+          state.q = Array.from(oriSensor.quaternion);
+          state.haveQ = true;
+        });
+        oriSensor.addEventListener('error', e => log("Orientation sensor error: " + e.error.name));
+        oriSensor.start();
+        got.push("AbsoluteOrientation");
+      }catch(e){ log("AbsoluteOrientationSensor error: " + e); }
+    }
+
+    if('Gyroscope' in window){
+      try{
+        gyroSensor = new Gyroscope({frequency:60});
+        gyroSensor.addEventListener('reading', () => {
+          // The Generic Sensor API already reports rad/s
+          state.gyro = [gyroSensor.x || 0, gyroSensor.y || 0, gyroSensor.z || 0];
+          state.haveGyro = true;
+        });
+        gyroSensor.addEventListener('error', e => log("Gyroscope error: " + e.error.name));
+        gyroSensor.start();
+        got.push("Gyroscope");
+      }catch(e){ log("Gyroscope error: " + e); }
+    }
+
+    if('LinearAccelerationSensor' in window){
+      try{
+        linSensor = new LinearAccelerationSensor({frequency:60});
+        linSensor.addEventListener('reading', () => {
+          state.acc = [linSensor.x || 0, linSensor.y || 0, linSensor.z || 0];
+          state.accIncludesG = false;
+        });
+        linSensor.start();
+        got.push("LinearAccel");
+      }catch(e){ log("LinearAccelerationSensor error: " + e); }
+    }
+
+    // If either orientation or gyro is missing, add the legacy events
+    if(!state.haveQ || !gyroSensor){
+      startLegacySensors();
+      got.push("legacy");
+    }
+
+    state.source = got.join(" + ") || "none";
+    srcEl.textContent = state.source;
+    log("Sensors: " + state.source);
+  }
+
+  function startLegacySensors(){
+    if(legacyStarted) return;
+    legacyStarted = true;
+
+    window.addEventListener('deviceorientation', (ev) => {
+      if(ev.alpha == null) return;
+      if(oriSensor && state.haveQ) return;        // native quaternion wins
+      state.q = eulerToQuat(ev.alpha, ev.beta, ev.gamma);
+      state.haveQ = true;
+    });
+
+    window.addEventListener('devicemotion', (ev) => {
+      // ---- gyroscope ----
+      // W3C: rotationRate.alpha is about Z, beta about X, gamma about Y,
+      // in deg/s.
+      const rr = ev.rotationRate;
+      if(rr && !gyroSensor){
+        state.gyro = [
+          (rr.beta  || 0) * DEG2RAD,   // X
+          (rr.gamma || 0) * DEG2RAD,   // Y
+          (rr.alpha || 0) * DEG2RAD    // Z
+        ];
+        state.haveGyro = true;
+      }
+
+      // ---- accelerometer ----
+      // Prefer the gravity-free reading; otherwise fall back to the one
+      // including gravity and flag it, so Python subtracts gravity as a
+      // vector in world space (the old |a| - 9.81 was wrong).
+      if(!linSensor){
+        const a = ev.acceleration;
+        if(a && a.x != null){
+          state.acc = [a.x || 0, a.y || 0, a.z || 0];
+          state.accIncludesG = false;
+        }else{
+          const g = ev.accelerationIncludingGravity;
+          if(g){
+            state.acc = [g.x || 0, g.y || 0, g.z || 0];
+            state.accIncludesG = true;
+          }
+        }
+      }
+    });
+
+    log("Legacy deviceorientation/devicemotion started");
+  }
+
+  async function startSensorsWithIOSPermission(){
+    try{
+      if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === "function") {
+        log("DeviceMotion permission: " + await DeviceMotionEvent.requestPermission());
+      }
+      if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === "function") {
+        log("DeviceOrientation permission: " + await DeviceOrientationEvent.requestPermission());
+      }
+    }catch(e){ log("iOS permission error: " + e); }
+    startGenericSensors();
+    startSendLoop();
+  }
+
+  // ================================================================
+  //  Send loop: one packed state message at ~66 Hz.
+  //  (The old version sent a separate message per sensor, which was more
+  //  traffic and left the samples unaligned in time.)
+  // ================================================================
+  let sendTimer = null;
+  function startSendLoop(){
+    if(sendTimer) return;
+    sendTimer = setInterval(() => {
+      if(!state.haveQ) return;
+      send({
+        type: 'imu',
+        t: performance.now() / 1000,
+        q: state.q,
+        gyro: state.gyro,
+        acc: state.acc,
+        accg: state.accIncludesG
+      });
+
+      quatEl.textContent = state.q.map(v => v.toFixed(3)).join(", ");
+      gyroEl.textContent = state.gyro.map(v => v.toFixed(2)).join(", ");
+      linEl.textContent  = state.acc.map(v => v.toFixed(2)).join(", ");
+
+      // swing feedback, v ~ |w| * L
+      const w = Math.hypot(state.gyro[0], state.gyro[1], state.gyro[2]);
+      const v = w * ARM_LENGTH;
+      swingTxt.textContent = v.toFixed(1) + " m/s";
+      swingBar.style.width = Math.min(100, v / SWING_FULL_SCALE * 100) + "%";
+    }, 15);
+  }
+
+  // ================================================================
+  btnStart.onclick = () => {
+    if(!ws || ws.readyState !== WebSocket.OPEN){
+      connectWS();
+      setTimeout(startSensorsWithIOSPermission, 500);
+    }else{
+      startSensorsWithIOSPermission();
+    }
+  };
+  btnCalib.onclick  = () => { send({type:'calib'});  log("-> calibrate"); };
+  btnCenter.onclick = () => { send({type:'center'}); log("-> center"); };
+})();
+</script>
+</body>
+</html>

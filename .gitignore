@@ -1,0 +1,35 @@
+# Credentials -- selfsigned.pem is a combined key+cert and server.py
+# regenerates it on first run, so it never needs to be in history
+selfsigned.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated datasets and trained weights. Both are large and both are
+# reproducible from the command in the README, so they stay out of history
+# where every retrain would otherwise add another copy.
+#   runs/data         37 MB   regenerate: python train_ai.py data ...
+#   runs/checkpoints  14 MB   regenerate: python train_ai.py train ...
+runs/data/
+runs/checkpoints/
+
+# Findings are kept: runs/results*.csv, runs/figures/, runs/*.log
+
+# Session output, rewritten on every run
+runs/ai_play_strokes.csv
+
+# Media -- 196 MB of recordings, not source
+video/
+
+# Per-machine tool settings, not project configuration
+.claude/settings.local.json
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
