@@ -35,14 +35,19 @@ MISS_PENALTY = 3.0        # cost added when the ball does not land in
 EFFORT_WEIGHT = 0.01      # mild preference for the cheaper stroke
 
 
-def _cost(achieved, outcome, goals, actions):
+def _cost(achieved, outcome, goals, actions, weights=None):
     """Weighted goal error in normalised units, plus a miss penalty.
 
     Normalised because the goal mixes metres, m/s and rad/s; weighted because
     landing in the wrong place matters more than landing with slightly the
     wrong spin.
+
+    ``weights`` defaults to dataset.GOAL_WEIGHTS. It is a parameter because
+    that constant decides what the search gives up once placement is nearly
+    exhausted -- the trade-off sweep_weights.py maps -- and a hardcoded
+    global cannot be swept.
     """
-    err = dataset.goal_error(achieved, goals)
+    err = dataset.goal_error(achieved, goals, weights)
     err = np.where(np.isnan(err), 4.0, err)
     penalty = np.where(outcome == 1, 0.0, MISS_PENALTY)
     effort = EFFORT_WEIGHT * np.linalg.norm(actions[:, 2:5], axis=1)
@@ -79,7 +84,8 @@ ROBUST_SIGMA_MULT = 2.0
 ROBUST_WEIGHT = 0.25
 
 
-def _robust_rerank(pos, vel, spin, goals, elites, rng, sim_dt, k, sigma):
+def _robust_rerank(pos, vel, spin, goals, elites, rng, sim_dt, k, sigma,
+                   weights=None):
     """Pick, from each problem's elites, the stroke that survives being wrong.
 
     The plain cost asks only how close a stroke gets to the goal, never how
@@ -117,13 +123,14 @@ def _robust_rerank(pos, vel, spin, goals, elites, rng, sim_dt, k, sigma):
     ach_e, out_e, _ = dataset.apply_actions(
         np.repeat(pos, m, axis=0), np.repeat(vel, m, axis=0),
         np.repeat(spin, m, axis=0), flat_e, dt=sim_dt)
-    nominal = _cost(ach_e, out_e, np.repeat(goals, m, axis=0), flat_e).reshape(n, m)
+    nominal = _cost(ach_e, out_e, np.repeat(goals, m, axis=0), flat_e,
+                    weights).reshape(n, m)
     return nominal, fragility
 
 
 def solve_batch(pos, vel, spin, goals, iters=5, pop=64, elite_frac=0.15,
                 rng=None, sim_dt=SOLVER_DT, robust_k=0, robust_sigma=None,
-                robust_weight=ROBUST_WEIGHT):
+                robust_weight=ROBUST_WEIGHT, weights=None):
     """Solve N stroke problems simultaneously.
 
     Every problem carries its own CEM distribution; the candidates for all of
@@ -163,7 +170,7 @@ def solve_batch(pos, vel, spin, goals, iters=5, pop=64, elite_frac=0.15,
 
         achieved, outcome, _ = dataset.apply_actions(rep_pos, rep_vel, rep_spin,
                                                      flat, dt=sim_dt)
-        cost = _cost(achieved, outcome, rep_tgt, flat).reshape(n, pop)
+        cost = _cost(achieved, outcome, rep_tgt, flat, weights).reshape(n, pop)
 
         order = np.argsort(cost, axis=1)
         top = order[:, 0]
@@ -187,7 +194,7 @@ def solve_batch(pos, vel, spin, goals, iters=5, pop=64, elite_frac=0.15,
         # something it actually prefers
         pool = np.concatenate([best_a[:, None, :], elites], axis=1)
         nominal, fragility = _robust_rerank(pos, vel, spin, goals, pool, rng,
-                                            sim_dt, robust_k, sigma)
+                                            sim_dt, robust_k, sigma, weights)
         pick = (nominal + robust_weight * fragility).argmin(axis=1)
         rows = np.arange(n)
         best_a = pool[rows, pick]
@@ -195,7 +202,7 @@ def solve_batch(pos, vel, spin, goals, iters=5, pop=64, elite_frac=0.15,
         # numbers stay comparable with a non-robust run
         achieved, outcome, _ = dataset.apply_actions(pos, vel, spin, best_a,
                                                      dt=sim_dt)
-        best_c = _cost(achieved, outcome, goals, best_a)
+        best_c = _cost(achieved, outcome, goals, best_a, weights)
         best_l, best_o = achieved, outcome
 
     return best_a, best_c, best_l, best_o

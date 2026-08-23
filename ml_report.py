@@ -290,16 +290,30 @@ def plot_per_dimension(df, out_dir):
 
 
 def print_table(df):
+    """One row per method: its best run, and how much data that took.
+
+    The row is picked by success rate, not by dataset size, and those are
+    not always the same row -- nearest neighbour peaks at 20k and is flat or
+    slightly worse at 200k. Under a column headed `n_train` that reads as
+    "the top of the ladder", so the column says what it actually is and a
+    marker flags any method whose best run is not its largest.
+    """
     best = df.sort_values("success_rate").groupby("family").tail(1)
+    largest = df.groupby("family")["n_train"].max()
     best = best.set_index("family").reindex(
         [m for m in METHOD_ORDER if m in set(best["family"])])
-    print(f"\n{'method':<32}{'n_train':>9}{'success':>10}"
+    print(f"\n{'method':<32}{'best at n':>11}{'success':>10}"
           f"{'place err':>12}{'goal err':>11}{'ms/stroke':>11}")
-    print("-" * 82)
+    print("-" * 84)
     for fam, r in best.iterrows():
-        print(f"{METHOD_LABEL.get(fam, fam):<32}{int(r['n_train']):>9,}"
+        n = int(r["n_train"])
+        # "<" means more data was tried and did not help
+        mark = "<" if n < largest.get(fam, n) else " "
+        print(f"{METHOD_LABEL.get(fam, fam):<32}{n:>10,}{mark}"
               f"{r['success_rate'] * 100:9.1f}%{r['place_err_median_m'] * 100:10.1f} cm"
               f"{r['goal_err_median']:11.3f}{r['infer_ms_per_stroke']:11.2f}")
+    if (best["n_train"] < best.index.map(largest)).any():
+        print("\n  < best run is not the largest one: more data did not help")
 
 
 def build_report(results_csv, out_dir):
