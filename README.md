@@ -211,9 +211,14 @@ mixed set alone is 140,000 single-threaded solves for data no policy ever
 reads. `--demo-frac 1.0` breaks the link and makes `--sizes` mean
 demonstrations directly.
 
+`--robust-k 8` picks demonstrations that survive being executed imperfectly
+rather than the nominally best ones. It costs about 14% more generation time
+and is worth it above roughly 20,000 demonstrations -- see below.
+
 Demonstrations are generated across `--workers` processes (default: cores
 minus two), which is the only parallel step and the slowest one: 200,000 at
-the 8x256 budget takes about fifteen minutes on sixteen cores.
+the 8x256 budget takes about fifteen minutes on sixteen cores. That pins
+every core at 100%, so on a laptop `--workers 6` is a kinder default.
 
 ### The task
 
@@ -312,6 +317,53 @@ trade-off rather than a shortage of data: at 200k the safe teacher still
 lands 3.2 points more often, and the accurate teacher is still worth
 **1.8x** the shot quality (goal 0.161 against 0.297). Which one you want
 depends on whether a miss costs you more than a sloppy hit.
+
+**Most of that trade-off can be bought back.** If accurate demonstrations
+fail more often because they sit on the edge of feasibility, then choosing
+demonstrations that survive being executed imperfectly should recover the
+margin without giving up the accuracy. `--robust-k` does exactly that -- it
+re-ranks the solver's final candidates by how well they hold up under
+perturbation -- and it had never been run:
+
+| 200k demonstrations | success | placement | goal error | sidespin |
+|---|---|---|---|---|
+| mixture policy | 95.3% | **6.1 cm** | **0.161** | 63.7 |
+| mixture policy, robust | **97.7%** | 7.0 cm | 0.170 | **38.3** |
+| direct MLP | 80.7% | **11.5 cm** | **0.158** | 36.5 |
+| direct MLP, robust | **85.2%** | 11.8 cm | 0.177 | 43.8 |
+
++2.4 and +4.5 points of success for 9 mm and 3 mm of placement. It also
+undoes the sidespin regression above -- 63.7 -> 38.3, better than the 20k
+model managed -- which fits the same explanation: that regression was the
+optimiser spending spin once placement was nearly exhausted, and a stroke
+bought that way is exactly the fragile kind the robustness pass rejects.
+
+**But it is harmful on small data.** At 20,000 demonstrations it goes the
+other way: the mixture policy drops 91.8% -> 90.9% and its placement nearly
+halves in quality, 7.5 -> 11.3 cm. Re-ranking narrows the effective
+candidate set, and when the demonstrations are already sparse that is
+over-conservative rather than safer. `--robust-k` is a tool for the regime
+where data is no longer the binding constraint.
+
+**The weights, not the data, decide where the last decade of training
+goes.** `sweep_weights.py` runs the reference solver under several
+weightings of the same problems, so the frontier is measured on the true
+physics with no learning in the way:
+
+| weighting | placement | spin |
+|---|---|---|
+| placement only | **4.0 cm** | 181.6 |
+| placement heavy | 7.1 cm | 113.7 |
+| **default (shipped)** | 10.8 cm | 59.4 |
+| balanced | 12.6 cm | **23.8** |
+| spin heavy | 14.0 cm | **14.5** |
+| spin only | 68.3 cm | 16.1 |
+
+It is a clean L, and `GOAL_WEIGHTS` sits on its steep arm: moving from
+`[1, 1, .6, .5, .5]` to `[1, 1, .8, 1, 1]` takes spin error 59.4 -> 23.8
+rad/s for 1.8 cm of placement. Every "the model cannot do spin" reading in
+this study is really a statement about that choice. Nothing here retrains a
+policy under different weights -- that is still open.
 
 **The best model in the study is the mixture policy on better
 demonstrations**: 95.3% success, **6.1 cm** placement and 0.161 weighted goal
@@ -507,9 +559,10 @@ normal is unconstrained, so an arm can use it freely.
   the exact restitution and friction constants
 * DAgger-style iteration on the forward model: train, run the optimiser,
   label the actions it chose with the true physics, retrain
-* A `GOAL_WEIGHTS` sweep. The sidespin regression above shows the weights,
-  not the data, decide what the last decade of training buys -- and they have
-  never been varied
+* Train policies under different `GOAL_WEIGHTS`. `sweep_weights.py` maps the
+  frontier for the *solver*, but no policy has ever been trained anywhere
+  except at the shipped weighting, so the learned half of that curve is
+  unmeasured
 * Raise the demonstration budget again. Every policy is still bounded by its
   teacher, and 10 x 512 demonstrations have never been generated at scale
 * Reconcile `strokes.csv` with the simulator. Only three human strokes have
