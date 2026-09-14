@@ -1,8 +1,144 @@
-# 3D Table Tennis - the phone is the paddle
+<div align="center">
 
-Play table tennis in Panda3D using a phone as the paddle (gyroscope drives
-blade angle and swing power) with webcam hand tracking for placement. Every
-stroke is logged so a model can later be trained to know how to return a ball.
+# 🏓 Table Tennis — the phone is the paddle
+
+**A physics-accurate table tennis simulator you play with your phone,
+and a study of how a machine learns to return a ball to a spot you choose.**
+
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![Panda3D](https://img.shields.io/badge/Panda3D-1.10-FFAA00?logo=panda3d&logoColor=black)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.5-EE4C2C?logo=pytorch&logoColor=white)
+![NumPy](https://img.shields.io/badge/NumPy-vectorised-013243?logo=numpy&logoColor=white)
+![checks](https://img.shields.io/badge/verification-55%20checks-1baf7a)
+
+<img src="docs/demo_compare.gif" width="92%" alt="Four models planning the same shot">
+
+*Four models are asked for the **same shot** off the **same incoming ball**.
+Each coloured arc is one method's answer; the rings are where each one
+actually landed. The spread between them is the difference between the
+methods and nothing else.*
+
+</div>
+
+---
+
+## What this is
+
+Two halves that share one physics engine, so nothing is modelled twice.
+
+**A game.** Your phone is the paddle — the gyroscope drives blade angle and
+swing power, a webcam places you. It plays without either (arrow keys and
+space).
+
+**A study.** Given the ball arriving at the strike plane, produce a stroke
+that lands it **where you asked, at the speed you asked, with the spin you
+asked**. Seven methods compete, from nearest-neighbour retrieval to a mixture
+density policy, all scored by playing their stroke through the real physics.
+
+| | |
+|---|---|
+| 🎯 **7.0 cm** median placement at **97.7%** success | the best learned policy |
+| ⚡ **0.0005 ms** per stroke | against **46 ms** for the search it learned from |
+| 🏓 **53-stroke** rally | policy against policy, no scripting |
+| ✅ **55 checks** | physics, orientation, encoding, agents |
+
+---
+
+## See it run
+
+### Ask for a shot — four models attempt it
+
+That is the animation at the top of this page. Click the table to place the
+target, dial in speed and spin, press serve. The
+stroke freezes at contact and breaks into its two components — **drive** along
+the blade normal buys speed, **brush** across the face buys spin — then the
+camera pulls out and follows the ball over the net to where it actually lands.
+
+```bash
+python ai_play.py --compare trainsize
+```
+
+### Rally against the trained policy
+
+<div align="center">
+<img src="docs/demo_rally.gif" width="88%">
+</div>
+
+*Both paddles driven by the same policy — there is no way to fake a person
+convincingly and no reason to try. With a phone connected, the near paddle is
+you.*
+
+The opponent has never seen its own half. Every policy was trained on a ball
+arriving in −x to be returned into +x, so the far side's problem is rotated
+180° about the vertical into the frame the model knows and the stroke it
+returns is rotated back out. The contact model is exactly invariant under that
+rotation — `verify_learning.py` pins it to zero error rather than assuming it.
+
+```bash
+python rally_ai.py
+```
+
+---
+
+## Results
+
+Every method plays its chosen stroke through the **real physics**. No method
+is ever scored on its own surrogate.
+
+<div align="center">
+<img src="runs/figures/speed_vs_accuracy.png" width="88%">
+</div>
+
+| method | success | placement | goal error | ms/stroke |
+|---|---:|---:|---:|---:|
+| CEM on true physics *(the reference, not learned)* | **99.7%** | 18.7 cm | 0.361 | 45.7 |
+| **mixture density policy**, better + robust demos | 97.7% | **7.0 cm** | 0.170 | **0.00045** |
+| mixture density policy, better demos | 95.3% | **6.1 cm** | 0.161 | 0.00048 |
+| mixture + forward ranking, better demos | 88.9% | 7.1 cm | **0.157** | 0.00114 |
+| direct policy MLP, better demos | 80.7% | 11.5 cm | 0.158 | 0.00054 |
+| nearest neighbour, better demos | 79.2% | 19.7 cm | 0.249 | 0.46 |
+
+**A policy does not beat search — it amortises one.** The mixture policy
+places better than the reference above (7.0 cm against 18.7 cm) because that
+reference runs a fixed, modest budget and most of its 18.7 cm is search noise
+rather than a limit of the task. Give the search more budget and it catches
+up: a 10 × 512 CEM reaches 7.8 cm. The policy matches that for **0.00045 ms
+instead of 798 ms** — five orders of magnitude — which is the actual result.
+
+<table>
+<tr>
+<td width="50%"><img src="runs/figures/compare_landing_trainsize.png"></td>
+<td width="50%"><img src="runs/figures/weights_frontier.png"></td>
+</tr>
+<tr>
+<td><b>More data tightens the cloud.</b> Landing points relative to the spot
+requested, one panel per training size.</td>
+<td><b>The weights decide the trade-off.</b> What the shipped
+<code>GOAL_WEIGHTS</code> gives up, measured on the true physics.</td>
+</tr>
+</table>
+
+The full findings — covariate shift, the one-to-many problem, where data stops
+buying anything, and what the robustness pass bought back — are in
+[**Learning to return the ball**](#learning-to-return-the-ball) below.
+
+---
+
+## Quick start
+
+```bash
+conda activate myenv
+python verify_physics.py        # 29 physics and orientation checks
+python verify_learning.py       # 26 encoding, agent and comparison checks
+
+python ai_play.py --compare trainsize     # watch models play a shot you choose
+python rally_ai.py                        # rally against the policy
+python compare_models.py --compare method # the comparison as figures
+```
+
+To play it yourself with a phone, see [Environment](#environment) below.
+
+---
 
 ## Environment
 

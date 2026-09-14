@@ -195,18 +195,40 @@ def plot_speed_accuracy(df, out_dir):
     be separable, which caps a validated categorical palette at three, and
     there are more methods than that here.
     """
-    fig, ax = new_fig((7.0, 4.6))
+    fig, ax = new_fig((9.2, 5.4))
     best = df.sort_values("success_rate").groupby("family").tail(1)
     x = best["infer_ms_per_stroke"].to_numpy()
     y = best["success_rate"].to_numpy() * 100
+    labels = [METHOD_LABEL.get(f, f) for f in best["family"]]
     ax.scatter(x, y, s=90, color=SERIES[0], edgecolors=SURFACE,
                linewidths=1.2, zorder=3)
-    for xi, yi, fam in zip(x, y, best["family"]):
-        ax.annotate(METHOD_LABEL.get(fam, fam), (xi, yi),
-                    textcoords="offset points", xytext=(9, 4),
-                    fontsize=8, color=INK_SECONDARY)
     ax.set_xscale("log")
-    ax.set_ylim(0, 105)
+    ax.set_ylim(0, 112)
+
+    # The methods worth comparing are the fast accurate ones, so they pile
+    # into one corner and their labels landed on top of each other. Push the
+    # labels apart along y and run a leader back to the point each belongs
+    # to; a label is only readable if it is attached to something.
+    lx = np.log10(np.clip(x, 1e-6, None))
+    span = lx.max() - lx.min() or 1.0
+    order = np.argsort(-y)
+    min_gap = 5.6                                   # in y units (percent)
+    placed = {}
+    last = None
+    for i in order:
+        ly = y[i] if last is None else min(y[i], last - min_gap)
+        placed[i] = ly
+        last = ly
+    for i, (xi, yi, text) in enumerate(zip(x, y, labels)):
+        # Labels to the right of the point, except on the far right of the
+        # axis where there is no room
+        right = lx[i] < lx.min() + 0.72 * span
+        tx = xi * (1.45 if right else 0.62)
+        ha = "left" if right else "right"
+        ax.annotate(text, (tx, placed[i]), fontsize=8.5, color=INK_SECONDARY,
+                    va="center", ha=ha, zorder=5)
+        ax.plot([xi, tx], [yi, placed[i]], lw=0.7, color=INK_SECONDARY,
+                alpha=0.45, zorder=2)
     style(ax, "Best result per method: accuracy against inference cost",
           "inference time per stroke (ms, log scale)", "success rate (%)")
     save(fig, out_dir, "speed_vs_accuracy.png")
