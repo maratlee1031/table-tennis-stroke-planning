@@ -1,0 +1,25 @@
+# Core: the simulator, the solver and the game.
+panda3d>=1.10
+numpy>=1.26
+websockets>=12.0
+
+# Learned policies. CPU wheels are fine -- the networks are small and the
+# bottleneck is the physics, which is NumPy. For GPU training follow
+# https://pytorch.org for the build matching your CUDA.
+torch>=2.2
+
+# Figures and the results table.
+matplotlib>=3.8
+pandas>=2.0
+
+# Progress bars on the long data-generation steps. Optional: without it
+# everything still runs, just quietly.
+tqdm>=4.66
+
+# Recording the README demos (record_demo.py).
+pillow>=10.0
+
+# Webcam hand tracking for paddle placement (mp_sender.py). Optional: the
+# game falls back to the arrow keys when these are missing.
+mediapipe>=0.10
+opencv-python>=4.8

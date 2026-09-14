@@ -181,7 +181,11 @@ class RallyAI(base.Game):
             self.opp.pos += (np.array([OPP_STRIKE_X, 0.0, C.TABLE_H + 0.25])
                              - self.opp.pos) * 0.12
             self.opp.velocity = np.zeros(3)
-            self._push_opp(quat.NEUTRAL_PADDLE)
+            # NEUTRAL_PADDLE faces +x, which is correct for the player and
+            # backwards for the opponent -- it would wait for the ball with
+            # the blade turned away from it
+            self.opp.normal = np.array([-1.0, 0.0, 0.0])
+            self._push_opp(quat.look_quat(self.opp.normal))
             return
 
         # c is already in the policy's frame, so it is fed straight in

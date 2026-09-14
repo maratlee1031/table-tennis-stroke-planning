@@ -5,12 +5,6 @@
 **A physics-accurate table tennis simulator you play with your phone,
 and a study of how a machine learns to return a ball to a spot you choose.**
 
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![Panda3D](https://img.shields.io/badge/Panda3D-1.10-FFAA00?logo=panda3d&logoColor=black)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.5-EE4C2C?logo=pytorch&logoColor=white)
-![NumPy](https://img.shields.io/badge/NumPy-vectorised-013243?logo=numpy&logoColor=white)
-![checks](https://img.shields.io/badge/verification-55%20checks-1baf7a)
-
 <img src="docs/demo_compare.gif" width="92%" alt="Four models planning the same shot">
 
 *Four models are asked for the **same shot** off the **same incoming ball**.
@@ -124,31 +118,48 @@ buying anything, and what the robustness pass bought back — are in
 
 ---
 
-## Quick start
+## Setup
+
+Python 3.12.
 
 ```bash
-conda activate myenv
+git clone https://github.com/maratlee1031/table-tennis-stroke-planning
+cd table-tennis-stroke-planning
+pip install -r requirements.txt
+```
+
+The physics, the solver and the game are NumPy; PyTorch is needed only for
+the learned policies. MediaPipe and OpenCV are needed only for webcam
+placement — without them the paddle follows the arrow keys.
+
+```bash
 python verify_physics.py        # 29 physics and orientation checks
 python verify_learning.py       # 26 encoding, agent and comparison checks
+```
 
+Datasets and trained weights are **not** in the repository: they are large
+and fully reproducible. Everything that needs them says so and falls back
+gracefully. To build them (about an hour and a half, mostly demonstration
+generation):
+
+```bash
+python train_ai.py all --sizes 500 2000 20000 200000 --demo-frac 1.0 \
+       --expert-iters 8 --expert-pop 256 --eval-n 3000 --epochs 60
+```
+
+Then:
+
+```bash
 python ai_play.py --compare trainsize     # watch models play a shot you choose
 python rally_ai.py                        # rally against the policy
 python compare_models.py --compare method # the comparison as figures
 ```
 
-To play it yourself with a phone, see [Environment](#environment) below.
-
 ---
 
-## Environment
+## Playing it with a phone
 
-Use the conda env **`myenv`** (Python 3.12, all packages present). Each of
-the three terminals starts with:
-
-```powershell
-conda activate myenv
-cd C:\Users\user\Desktop\EE_Project
-```
+Three terminals:
 
 | Terminal | Command | Purpose |
 |---|---|---|
@@ -158,7 +169,7 @@ cd C:\Users\user\Desktop\EE_Project
 
 For AI coach mode run `python coach_game.py` instead.
 
-## Connecting the phone
+### Connecting the phone
 
 1. Put the phone on the same Wi-Fi
 2. Browse to `https://<PC-IP>:8443/controller.html` and accept the
@@ -301,30 +312,6 @@ of averaging past strokes.
 * Restitution is calibrated against the ITTF drop test: released from 30 cm
   it rebounds 24.7 cm (spec is 24-26 cm).
 * Batch simulation runs about 7,500 trajectories per second, headless.
-
-## What was wrong before
-
-| Symptom | Cause |
-|---|---|
-| Blade angle came out skewed; only rotation about the vertical axis was right | Three stacked bugs: (1) the phone converted Euler to quaternion with ZYX and beta/gamma swapped, while the spec is Z-X'-Y''; (2) calibration multiplied by the inverse on the left when it should be on the right; (3) a rotation vector was fed into `set_hpr()` as if it were Euler angles. At (30, 45, 60) degrees the pose error was 49 degrees |
-| The scene was just lines | Bullet's debug wireframe was left switched on with `show()` |
-| Physics felt wrong | The outgoing velocity was `n * power` only - the incoming velocity was computed and then dropped as dead code; the Magnus function returned immediately; angular velocity was zeroed on every hit, so the ball never had spin at all |
-| Swing power was unreliable | Gravity was removed with `\|a\| - 9.81` (gravity is a vector, you cannot subtract magnitudes), and a 75 ms low-pass flattened the swing peak |
-| The model's own strokes were diluting the human dataset | `main_wss._try_hit` hardcoded `source=SRC_HUMAN` on every record, so `ai_play` wrote AI strokes into `strokes.csv` labelled as human. The record now takes the label from whoever owns the logger, and `ai_play` logs to `runs/ai_play_strokes.csv` as `ai` |
-| The stroke card read as though the model had done the opposite of what it did | The comparison table printed three column headers over two columns of numbers, so the *requested* value sat under "achieved". It now prints the achieved column it always promised |
-| kNN was unusable at 200k demonstrations | The distance matrix was built as a `(chunk, N, dim)` broadcast -- 5.3 GB per chunk. Expanded to `\|a-b\|^2 = \|a\|^2 + \|b\|^2 - 2ab` it is one BLAS call, 0.4 GB and 6.6x faster, with bit-identical neighbours |
-| In `ai_play`, auto-serve replayed the previous rally's stroke | `planned_action` was cleared when returning to the setup screen but not on the serve itself, and auto-serve skips the setup screen |
-| The opponent hit every ball backwards, off its own end | `hit_with_paddle` asked `face_normal_toward` which face was struck, using the ball position **after** it had been rewound onto the blade by the swept contact test -- that is asking which side of a plane a point *on* that plane is on, and the answer is whatever the rounding says. The player's half happened to round the right way; the opponent's rounded the wrong way every time. Both callers now pass the normal they already chose from the ball's position before the step, where the face is unambiguous |
-| Rallies longer than two strokes were impossible | `player_hit` is a rally-level flag -- "has the player touched it at all" -- so it only has a rising edge on the *first* stroke. Using it to detect each new stroke left `last_hitter` stuck after the second. `last_hit_time` moves on every contact |
-| Good rallies were cut off mid-flight | `RALLY_TIMEOUT` is measured from the serve, which is right when a rally is one stroke long. `rally_ai` restarts that clock on every contact, so only rallies that have actually stopped are ended |
-| Random requests in `ai_play` were mostly impossible | The five goal dimensions were sampled independently, which lands off the reachable set almost every time -- the exact trap `dataset.achievable_goals` exists to avoid. `[G]` now draws from a pool built that way instead (in a background thread; it costs a few seconds of simulation) |
-
-`analyze_states.py` and `plot_landing_trajectories.py` were merged into
-`analyze_strokes.py`. They overlapped heavily and carried machinery that no
-longer applies: string vector parsing (the schema is numeric now), drag-free
-ballistic reconstruction (wrong, and unnecessary now the physics can replay
-a trajectory exactly), hardcoded table dimensions, and kNN retrieval that the
-CEM solver supersedes.
 
 ## Learning to return the ball
 
@@ -688,19 +675,3 @@ before trusting a stroke on real hardware: friction is a property of the
 rubber, not something the model gets to choose, and a stroke needing 0.89
 cannot be executed on rubber that provides 0.7. Rotation about the blade
 normal is unconstrained, so an arm can use it freely.
-
-## Next steps (not implemented)
-
-* RL self-play with domain randomisation, so the policy stops depending on
-  the exact restitution and friction constants
-* DAgger-style iteration on the forward model: train, run the optimiser,
-  label the actions it chose with the true physics, retrain
-* Train policies under different `GOAL_WEIGHTS`. `sweep_weights.py` maps the
-  frontier for the *solver*, but no policy has ever been trained anywhere
-  except at the shipped weighting, so the learned half of that curve is
-  unmeasured
-* Raise the demonstration budget again. Every policy is still bounded by its
-  teacher, and 10 x 512 demonstrations have never been generated at scale
-* Reconcile `strokes.csv` with the simulator. Only three human strokes have
-  ever been logged, so nothing in this study has been checked against a
-  person actually playing
