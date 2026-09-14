@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🏓 Table Tennis — the phone is the paddle
+# Table Tennis — the phone is the paddle
 
 **A physics-accurate table tennis simulator you play with your phone,
 and a study of how a machine learns to return a ball to a spot you choose.**
@@ -31,10 +31,10 @@ density policy, all scored by playing their stroke through the real physics.
 
 | | |
 |---|---|
-| 🎯 **7.0 cm** median placement at **97.7%** success | the best learned policy |
-| ⚡ **0.0005 ms** per stroke | against **46 ms** for the search it learned from |
-| 🏓 **53-stroke** rally | policy against policy, no scripting |
-| ✅ **55 checks** | physics, orientation, encoding, agents |
+| **7.0 cm** median placement at **97.7%** success | the best learned policy |
+| **0.0005 ms** per stroke | against **46 ms** for the search it learned from |
+| **53-stroke** rally | policy against policy, no scripting |
+| **55 checks** | physics, orientation, encoding, agents |
 
 ---
 
